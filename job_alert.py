@@ -1,7 +1,7 @@
 import requests
 import sqlite3
 import os
-import json
+import time
 from datetime import datetime
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
@@ -14,22 +14,93 @@ KEYWORDS = [
 ]
 
 TARGET_COMPANIES = [
-    "standard chartered", "hsbc", "bnp paribas", "citi", "deutsche bank",
-    "barclays", "bank of america", "bny mellon", "wells fargo",
-    "hitachi energy", "caterpillar", "honeywell", "bosch", "renault nissan",
-    "ford", "visteon", "paypal", "visa", "mastercard",
+    # Banking / Financial GCCs
+    "standard chartered", "hsbc", "bnp paribas", "citi", "citibank",
+    "deutsche bank", "barclays", "bank of america", "bny mellon", "wells fargo",
+    "goldman sachs", "jpmorgan", "morgan stanley",
+    # Industrial / Automotive GCCs
+    "hitachi energy", "caterpillar", "honeywell", "bosch",
+    "renault nissan", "rntbci", "ford", "visteon", "hyundai", "john deere",
+    # Telecom / Insurance GCCs
+    "comcast", "verizon", "allstate",
+    # Payments / Fintech
+    "paypal", "visa", "mastercard", "phonepe", "razorpay", "cred",
+    # E-commerce / Product
+    "flipkart", "swiggy", "zomato",
+    # SaaS / Enterprise
+    "salesforce", "servicenow", "adobe", "sap", "oracle",
+    # Others
     "optum", "unitedhealth", "pwc", "valgenesis", "trimble",
-    "comcast", "verizon", "allstate", "ups", "saviynt"
+    "ups", "saviynt", "globallogic"
 ]
 
-# Indeed job search URLs (India - no auth needed, public API)
-SEARCH_QUERIES = [
+# ── SEARCH QUERIES ────────────────────────────────────────────────────────────
+# Generic performance testing searches
+GENERIC_QUERIES = [
     "performance+test+engineer+jmeter",
     "performance+test+engineer+loadrunner",
     "performance+engineer+k6+api",
     "load+test+engineer+dynatrace",
+    "performance+testing+grafana+prometheus",
 ]
 
+# Company-specific searches — all 40 companies from tracker
+COMPANY_QUERIES = [
+    # Banking / Financial GCCs
+    "performance+test+%22standard+chartered%22",
+    "performance+test+%22hsbc%22",
+    "performance+test+%22bnp+paribas%22",
+    "performance+test+%22citi%22",
+    "performance+test+%22deutsche+bank%22",
+    "performance+test+%22barclays%22",
+    "performance+test+%22bank+of+america%22",
+    "performance+test+%22bny+mellon%22",
+    "performance+test+%22wells+fargo%22",
+    "performance+test+%22goldman+sachs%22",
+    "performance+test+%22jpmorgan%22",
+    "performance+test+%22morgan+stanley%22",
+    # Industrial / Automotive GCCs
+    "performance+test+%22hitachi+energy%22",
+    "performance+test+%22caterpillar%22",
+    "performance+test+%22honeywell%22",
+    "performance+test+%22bosch%22",
+    "performance+test+%22renault+nissan%22",
+    "performance+test+%22ford%22",
+    "performance+test+%22visteon%22",
+    "performance+test+%22hyundai%22",
+    "performance+test+%22john+deere%22",
+    # Telecom / Insurance GCCs
+    "performance+test+%22comcast%22",
+    "performance+test+%22verizon%22",
+    "performance+test+%22allstate%22",
+    # Payments / Fintech
+    "performance+test+%22paypal%22",
+    "performance+test+%22visa%22",
+    "performance+test+%22mastercard%22",
+    "performance+test+%22phonepe%22",
+    "performance+test+%22razorpay%22",
+    "performance+test+%22cred%22",
+    # E-commerce / Product
+    "performance+test+%22flipkart%22",
+    "performance+test+%22swiggy%22",
+    "performance+test+%22zomato%22",
+    # SaaS / Enterprise
+    "performance+test+%22salesforce%22",
+    "performance+test+%22servicenow%22",
+    "performance+test+%22adobe%22",
+    "performance+test+%22sap+labs%22",
+    "performance+test+%22oracle%22",
+    # Others
+    "performance+test+%22optum%22",
+    "performance+test+%22pwc%22",
+    "performance+test+%22valgenesis%22",
+    "performance+test+%22trimble%22",
+    "performance+test+%22ups%22",
+    "performance+test+%22saviynt%22",
+    "performance+test+%22globallogic%22",
+]
+
+SEARCH_QUERIES = GENERIC_QUERIES + COMPANY_QUERIES
 LOCATIONS = ["Chennai%2C+Tamil+Nadu", "Bengaluru%2C+Karnataka"]
 
 DB_PATH = "seen_jobs.db"
@@ -67,19 +138,19 @@ def mark_seen(conn, job_id, title, company, location, url):
 
 # ── SCRAPER ──────────────────────────────────────────────────────────────────
 def fetch_indeed_jobs():
-    """Fetch jobs from Indeed India using their public RSS/JSON feed."""
+    """Fetch jobs from Indeed India using their public RSS feed."""
     jobs = []
+    seen_guids = set()
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
     }
 
+    total = len(SEARCH_QUERIES) * len(LOCATIONS)
+    count = 0
+
     for query in SEARCH_QUERIES:
         for location in LOCATIONS:
-            url = (
-                f"https://in.indeed.com/jobs?q={query}"
-                f"&l={location}&fromage=7&sort=date&format=json"
-            )
-            # Use Indeed's public RSS feed (no auth needed)
+            count += 1
             rss_url = (
                 f"https://in.indeed.com/rss?q={query}"
                 f"&l={location}&fromage=7&sort=date"
@@ -87,15 +158,22 @@ def fetch_indeed_jobs():
             try:
                 resp = requests.get(rss_url, headers=headers, timeout=15)
                 if resp.status_code == 200:
-                    jobs.extend(parse_rss(resp.text, location))
+                    new = parse_rss(resp.text, location, seen_guids)
+                    jobs.extend(new)
+                    print(f"[{count}/{total}] {query[:40]}... → {len(new)} jobs")
+                else:
+                    print(f"[{count}/{total}] HTTP {resp.status_code} for {query[:40]}")
             except Exception as e:
-                print(f"Error fetching {rss_url}: {e}")
+                print(f"[{count}/{total}] Error: {e}")
+
+            # Small delay to avoid rate limiting
+            time.sleep(1)
 
     return jobs
 
 
-def parse_rss(xml_text, location):
-    """Parse Indeed RSS feed XML into job dicts."""
+def parse_rss(xml_text, location, seen_guids):
+    """Parse Indeed RSS feed XML into job dicts. Deduplicates by GUID."""
     import xml.etree.ElementTree as ET
     jobs = []
     try:
@@ -106,7 +184,6 @@ def parse_rss(xml_text, location):
         for item in channel.findall("item"):
             title = item.findtext("title", "").strip()
             company = ""
-            # Indeed RSS puts company in title like "Job Title - Company"
             if " - " in title:
                 parts = title.rsplit(" - ", 1)
                 title = parts[0].strip()
@@ -117,6 +194,11 @@ def parse_rss(xml_text, location):
             pub_date = item.findtext("pubDate", "").strip()
             description = item.findtext("description", "").strip()
             loc_text = location.replace("%2C+", ", ").replace("+", " ")
+
+            # Skip duplicates across queries
+            if guid in seen_guids:
+                continue
+            seen_guids.add(guid)
 
             jobs.append({
                 "id": guid,
@@ -140,9 +222,9 @@ def is_relevant(job):
 
 
 def is_target_company(job):
-    """Check if job is from one of our target companies (bonus flag)."""
-    company = job["company"].lower()
-    return any(tc in company for tc in TARGET_COMPANIES)
+    """Check if job is from one of our 40 target companies."""
+    text = f"{job['company']} {job['description']}".lower()
+    return any(tc in text for tc in TARGET_COMPANIES)
 
 
 # ── TELEGRAM ─────────────────────────────────────────────────────────────────
@@ -159,13 +241,17 @@ def send_telegram(message):
         print(f"Telegram error: {resp.text}")
 
 
-def format_job_message(jobs):
+def format_job_message(jobs, batch_num=1, total_batches=1):
     """Format new jobs into a clean Telegram message."""
     if not jobs:
         return None
 
-    lines = [f"🔔 <b>Job Alert — {datetime.now().strftime('%d %b %Y')}</b>"]
-    lines.append(f"Found <b>{len(jobs)}</b> new performance testing role(s):\n")
+    header = f"🔔 <b>Job Alert — {datetime.now().strftime('%d %b %Y')}</b>"
+    if total_batches > 1:
+        header += f" (Part {batch_num}/{total_batches})"
+
+    lines = [header]
+    lines.append(f"Found <b>{len(jobs)}</b> new role(s):\n")
 
     for i, job in enumerate(jobs, 1):
         star = "⭐ " if job.get("is_target") else ""
@@ -174,21 +260,22 @@ def format_job_message(jobs):
         lines.append(f"   📍 {job['location']}")
         if job.get("pub_date"):
             lines.append(f"   📅 {job['pub_date'][:16]}")
-        lines.append(f"   🔗 <a href='{job['url']}'>View & Apply</a>")
+        lines.append(f"   🔗 <a href='{job['url']}'>View &amp; Apply</a>")
         lines.append("")
 
     lines.append("─────────────────")
-    lines.append("⭐ = Target GCC/Product company")
+    lines.append("⭐ = One of your 40 target companies")
     return "\n".join(lines)
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     print(f"[{datetime.now()}] Starting job alert run...")
+    print(f"Total search queries: {len(SEARCH_QUERIES)} × {len(LOCATIONS)} locations")
     conn = init_db()
 
     all_jobs = fetch_indeed_jobs()
-    print(f"Fetched {len(all_jobs)} total jobs from Indeed RSS")
+    print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
 
     new_jobs = []
     for job in all_jobs:
@@ -201,23 +288,25 @@ def main():
         mark_seen(conn, job["id"], job["title"], job["company"],
                   job["location"], job["url"])
 
-    # Sort: target companies first
+    # Sort: target companies first, then by title
     new_jobs.sort(key=lambda j: (0 if j["is_target"] else 1, j["title"]))
 
-    print(f"New relevant jobs: {len(new_jobs)}")
+    print(f"New relevant jobs after filtering: {len(new_jobs)}")
 
     if new_jobs:
-        # Send in batches of 10 to avoid Telegram message length limits
-        for i in range(0, len(new_jobs), 10):
-            batch = new_jobs[i:i+10]
-            msg = format_job_message(batch)
+        # Send in batches of 10 to stay within Telegram message limits
+        batches = [new_jobs[i:i+10] for i in range(0, len(new_jobs), 10)]
+        total_batches = len(batches)
+        for i, batch in enumerate(batches, 1):
+            msg = format_job_message(batch, batch_num=i, total_batches=total_batches)
             if msg:
                 send_telegram(msg)
-                print(f"Sent batch {i//10 + 1} to Telegram")
+                print(f"Sent batch {i}/{total_batches} to Telegram")
+                time.sleep(2)  # avoid Telegram rate limit
     else:
-        # Send a brief daily check-in even if no new jobs
         send_telegram(
             f"✅ <b>Job Alert — {datetime.now().strftime('%d %b %Y')}</b>\n"
+            f"Checked <b>{len(SEARCH_QUERIES)}</b> queries across 40 target companies.\n"
             f"No new performance testing roles found today. Will check again tomorrow!"
         )
         print("No new jobs — sent check-in message")
