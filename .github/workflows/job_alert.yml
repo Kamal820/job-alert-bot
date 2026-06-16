@@ -1,0 +1,45 @@
+name: Daily Job Alert
+
+on:
+  schedule:
+    # Runs every day at 8:00 AM IST (2:30 AM UTC)
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    # Allows you to run manually from GitHub Actions tab (useful for testing)
+
+jobs:
+  run-job-alert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore seen jobs database
+        uses: actions/cache@v4
+        with:
+          path: seen_jobs.db
+          key: seen-jobs-db-${{ github.run_number }}
+          restore-keys: |
+            seen-jobs-db-
+
+      - name: Run job alert script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python job_alert.py
+
+      - name: Save seen jobs database
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: seen_jobs.db
+          key: seen-jobs-db-${{ github.run_number }}
